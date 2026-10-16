@@ -66,15 +66,61 @@ int main(int argc, char **argv)
     start_time = MPI_Wtime();
     /* =========================== AREA OF INTEREST ============================ */
 
-    /* Do the matrix product */
-    for (i=0; i<Ndim; i++){
-		for (j=0; j<Mdim; j++){
-			for(k=0;k<Pdim;k++){
-				/* C(i,j) = sum(over k) A(i,k) * B(k,j) */
-				*(C+(i*Ndim+j)) += *(A+(i*Ndim+k)) *  *(B+(k*Pdim+j));
-			}
-		}
-	}
+    int local_rows = Ndim / size + (rank < Ndim % size ? 1 : 0);
+    int *row_counts = (int *)malloc(size * sizeof(int));
+    int *row_displacements = (int *)malloc(size * sizeof(int));
+    double *local_A = (double *)malloc((size_t)local_rows * Pdim * sizeof(double));
+    double *local_C = (double *)calloc((size_t)local_rows * Mdim, sizeof(double));
+
+    /* Every process needs the complete right-hand matrix. */
+    MPI_Bcast(B, Pdim * Mdim, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+    for (i = 0; i < size; i++) {
+        row_counts[i] = Ndim / size + (i < Ndim % size ? 1 : 0);
+        row_displacements[i] = (i == 0) ? 0 : row_displacements[i - 1] +
+            row_counts[i - 1];
+    }
+    for (i = 0; i < size; i++) {
+        row_counts[i] *= Pdim;
+        row_displacements[i] *= Pdim;
+    }
+
+    MPI_Scatterv(rank == 0 ? A : NULL, row_counts, row_displacements,
+                 MPI_DOUBLE, local_A, local_rows * Pdim, MPI_DOUBLE,
+                 0, MPI_COMM_WORLD);
+
+    /* Compute C in cache-sized tiles for better data locality. */
+    {
+        const int block_size = 64;
+        int i0, j0, k0, i1, j1, k1;
+
+        for (i0 = 0; i0 < local_rows; i0 += block_size) {
+            i1 = (i0 + block_size < local_rows) ? i0 + block_size : local_rows;
+            for (k0 = 0; k0 < Pdim; k0 += block_size) {
+                k1 = (k0 + block_size < Pdim) ? k0 + block_size : Pdim;
+                for (j0 = 0; j0 < Mdim; j0 += block_size) {
+                    j1 = (j0 + block_size < Mdim) ? j0 + block_size : Mdim;
+                    for (i = i0; i < i1; i++) {
+                        for (k = k0; k < k1; k++) {
+                            double a_value = local_A[i * Pdim + k];
+                            for (j = j0; j < j1; j++)
+                                local_C[i * Mdim + j] +=
+                                    a_value * B[k * Mdim + j];
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    MPI_Gatherv(local_C, local_rows * Mdim, MPI_DOUBLE,
+                rank == 0 ? C : NULL, row_counts, row_displacements,
+                MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+    free(local_A);
+    free(local_C);
+    free(row_counts);
+    free(row_displacements);
 
     /* ========================= END AREA OF INTEREST ========================== */
 	run_time = MPI_Wtime() - start_time;
