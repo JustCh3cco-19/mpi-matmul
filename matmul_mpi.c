@@ -101,11 +101,12 @@ int main(int argc, char **argv)
                 for (j0 = 0; j0 < Mdim; j0 += block_size) {
                     j1 = (j0 + block_size < Mdim) ? j0 + block_size : Mdim;
                     for (i = i0; i < i1; i++) {
+                        double *c_row = &local_C[i * Mdim];
                         for (k = k0; k < k1; k++) {
                             double a_value = local_A[i * Pdim + k];
+                            const double *b_row = &B[k * Mdim];
                             for (j = j0; j < j1; j++)
-                                local_C[i * Mdim + j] +=
-                                    a_value * B[k * Mdim + j];
+                                c_row[j] += a_value * b_row[j];
                         }
                     }
                 }
